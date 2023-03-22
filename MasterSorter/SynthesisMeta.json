@@ -1,0 +1,9 @@
+{
+  "Nickname": "MasterSorter",
+  "Visibility": "Hidden",
+  "OneLineDescription": "Do not install",
+  "LongDescription": "Do not install this",
+  "PreferredAutoVersioning": "Default",
+  "RequiredMods": [],
+  "TargetedReleases": []
+}
