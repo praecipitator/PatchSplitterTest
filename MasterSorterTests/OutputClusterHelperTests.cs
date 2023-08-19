@@ -3,6 +3,8 @@ using Mutagen.Bethesda;
 using Mutagen.Bethesda.Fallout4;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Records;
+using Noggog;
+using System.Security.Policy;
 
 namespace MasterSorter.Tests
 {
@@ -39,24 +41,28 @@ namespace MasterSorter.Tests
         {
             // try to make a fake mod
             var inputMod = new Fallout4Mod(ModKey.FromNameAndExtension("dummy.esp"));
+            // and a fake master, because we don't want to move generated forms, only overrides
+            var fakeMaster = new Fallout4Mod(ModKey.FromNameAndExtension("dummyMaster.esm"));
 
+            // generate lots of forms from lots of files
             for (uint i = 0; i < 5; i++)
             {
-                var flst = createFormListWithContents(new FormKey(inputMod.ModKey, 0x23 + i), 7, "dummyFile_" + i + "_", 0x666 + i);
+                var flst = createFormListWithContents(new FormKey(fakeMaster.ModKey, 0x23 + i), 6, "dummyFile_" + i + "_", 0x666 + i);
 
                 inputMod.FormLists.Add(flst);
             }
 
             for (uint i = 0; i < 5; i++)
             {
-                var flst = createFormListWithContents(new FormKey(inputMod.ModKey, 0x523 + i), 3, "dummyFile2_" + i + "_", 0x777 + i);
+                var flst = createFormListWithContents(new FormKey(fakeMaster.ModKey, 0x523 + i), 3, "dummyFile2_" + i + "_", 0x777 + i);
 
                 inputMod.FormLists.Add(flst);
             }
 
             var outputList = OutputClusterHelper<IFallout4Mod, IFallout4ModGetter>.SplitOutputMod(GameRelease.Fallout4, inputMod, 10);
 
-            // now, we expect 5 clusters, each containing one of the 7-sized FLSTs and one of the 3-sized FLSTs
+            // now, we expect 5 clusters, each containing one of the 6-sized FLSTs and one of the 3-sized FLSTs
+            // there are only 9 files in each cluster, because one slot is used by dummyMaster.esm
             Assert.AreEqual(5, outputList.Count);
 
             foreach (var mod in outputList)
@@ -79,18 +85,25 @@ namespace MasterSorter.Tests
         }
 
         [TestMethod()]
-        public void OverridesArePreservedTest()
+        public void FormsArePreservedTest()
         {
+            // test that overrides stay overrides, and that local forms keep their FormIDs
+
             var inputMod = new Fallout4Mod(ModKey.FromNameAndExtension("dummy.esp"));
-            HashSet<string> edidsLocal = new();
+            // local: form is added by the inputMod itself
+            // HashSet<string> edidsLocal = new();
+            Dictionary<string, FormKey> localForms = new();
+            // override: form is added by another mod, but is overridden in inputMod. it brings all of it's masters with it
             HashSet<string> edidsOverride = new();
+            // remote: form is added by another mod, not overridden in inputMod, but is referenced. it brings only it's source file as a master with it
             HashSet<string> edidsRemote = new();
 
             var localFlst = new FormList(inputMod.GetNextFormKey())
             {
                 EditorID = "LocalFlst"
             };
-            edidsLocal.Add(localFlst.EditorID);
+            // edidsLocal.Add(localFlst.EditorID);
+            localForms.Add(localFlst.EditorID, localFlst.FormKey);
 
             inputMod.FormLists.Add(localFlst);
 
@@ -100,7 +113,7 @@ namespace MasterSorter.Tests
                 {
                     EditorID = "localMisc1_" + i
                 };
-                edidsLocal.Add(curMisc.EditorID);
+                localForms.Add(curMisc.EditorID, curMisc.FormKey);
                 inputMod.MiscItems.Add(curMisc);
                 localFlst.Items.Add(curMisc);
             }
@@ -110,7 +123,7 @@ namespace MasterSorter.Tests
             {
                 EditorID = "LocalWithOverridesFlst"
             };
-            edidsLocal.Add(localWithOverridesFlst.EditorID);
+            localForms.Add(localWithOverridesFlst.EditorID, localWithOverridesFlst.FormKey);
 
             var otherFileModKey = new ModKey("Fallout4", ModType.Master);
             for (uint i = 0; i < 5; i++)
@@ -139,7 +152,7 @@ namespace MasterSorter.Tests
                 {
                     EditorID = getNewEdid("localMisc")
                 };
-                edidsLocal.Add(curMisc.EditorID);
+                localForms.Add(curMisc.EditorID, curMisc.FormKey);
                 inputMod.MiscItems.Add(curMisc);
                 overrideFlst.Items.Add(curMisc);
             }
@@ -155,7 +168,7 @@ namespace MasterSorter.Tests
                 overrideFlst.Items.Add(curMisc);
             }
 
-            // and some remove forms
+            // and some remote forms
             for (uint i = 0; i < 5; i++)
             {
                 var curMisc = new MiscItem(new FormKey(otherFileModKey, 0xf00 + i))
@@ -169,7 +182,7 @@ namespace MasterSorter.Tests
 
             var outputList = OutputClusterHelper<IFallout4Mod, IFallout4ModGetter>.SplitOutputMod(GameRelease.Fallout4, inputMod, 255);
             // expecting one file exactly, everything in expectedEdids to be present, and overrides to have stayed overrides
-            // essentially, we should recieve one file, which is pretty much identical to inputMod (besides the formIDs)
+            // essentially, we should recieve one file, which is pretty much identical to inputMod
             Assert.AreEqual(1, outputList.Count, "Should only generate one output file");
             var mod = outputList[0];
             var recs = mod.EnumerateMajorRecords();
@@ -191,16 +204,21 @@ namespace MasterSorter.Tests
                     }
                     edidsOverride.Remove(edid);
                 }
-                else if (edidsLocal.Contains(edid))
+                else if (localForms.ContainsKey(edid))
                 {
-                    if (rec.FormKey.ModKey != mod.ModKey)
+                    if(rec.FormKey != localForms[edid])
                     {
-                        Assert.Fail("Local form turned into overridden form. Edid: " + edid);
+                        Assert.Fail("FormKey for local form changed! Edid: " + edid+" old formkey: "+ localForms[edid]+" new formkey: "+rec.FormKey);
                     }
-                    edidsLocal.Remove(edid);
+
+                    localForms.Remove(edid);
+                }
+                else
+                {
+                    Assert.Fail("Unexpected form in output file: " + edid+" "+rec.FormKey);
                 }
             }
-            Assert.IsTrue(edidsLocal.Count == 0, "Not all local forms were found in output file");
+            Assert.IsTrue(localForms.Count == 0, "Not all local forms were found in output file");
             Assert.IsTrue(edidsOverride.Count == 0, "Not all overridden forms were found in output file");
         }
 

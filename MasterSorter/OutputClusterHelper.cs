@@ -2,7 +2,9 @@ using DynamicData;
 using Mutagen.Bethesda;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
+using Mutagen.Bethesda.Plugins.Exceptions;
 using Mutagen.Bethesda.Plugins.Records;
+using System.Collections.Immutable;
 
 namespace MasterSorter
 {
@@ -52,12 +54,58 @@ namespace MasterSorter
         {
             var clusters = new List<Cluster>();
 
-            var linkCache = inputMod.ToUntypedImmutableLinkCache();
-            foreach (var rec in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
+            // TODO pre-split the lists
 
-            // var recs = inputMod.EnumerateMajorRecords();
-            // foreach (var rec in recs)
+            var linkCache = inputMod.ToUntypedImmutableLinkCache();
+            // special case: if rec is from within inputMod itself, not only keept it in Cluster #0,
+            // but also keep it's FormID. This should ensure it's FormKey stays constant,
+            // because Cluster #0 should be always named the same as the input mod name.
+
+            // do this in a separate pass from the rest, so that no override can block a created record from being added.
+            foreach (var rec in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
             {
+                if(rec.Record.FormKey.ModKey == inputMod.ModKey)
+                {
+
+                    // relevant
+                    var masters = GetAllMasters(rec, inputMod.ModKey);
+                    if (clusters.Count == 0)
+                    {
+                        var cluster = new Cluster
+                        {
+                            masters = masters
+                        };
+                        cluster.records.Add(rec);
+                        clusters.Add(cluster);
+                    } 
+                    else
+                    {
+                        var cluster = clusters[0];
+
+                        var missingMasters = masters.Except(cluster.masters);
+                        if (cluster.masters.Count + missingMasters.Count() <= limit)
+                        {
+                            cluster.masters.UnionWith(masters);
+                            cluster.records.Add(rec);
+                        }
+                        else
+                        {
+                            // this is bad 
+                            cluster.masters.UnionWith(masters);
+                            throw new TooManyMastersInNewFormsException(inputMod.ModKey, cluster.masters.ToArray(), limit);
+                        }
+                    }
+                }
+            }
+
+            // second pass: overrides
+            foreach (var rec in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
+            {
+                if (rec.Record.FormKey.ModKey == inputMod.ModKey)
+                {
+                    // this was done in the first pass
+                    continue;
+                }
                 var masters = GetAllMasters(rec, inputMod.ModKey);
                 var lastClusterIndex = -1;
 
@@ -99,8 +147,6 @@ namespace MasterSorter
 
         public static List<TMod> SplitOutputMod(GameRelease release, TMod inputMod, int limit = 255)
         {
-            // edge case: if rec is supposed to recieve a certain FormID via the EditorID mechanism, it should also always go into the same filename
-            // TODO think of a mechanism for this
             var result = new List<TMod>();
             var inputFileName = inputMod.ModKey.FileName;
             var baseName = inputFileName.NameWithoutExtension;
@@ -122,13 +168,18 @@ namespace MasterSorter
 
                 var newMod = ModInstantiator<TMod>.Activator(ModKey.FromFileName(curFileName), release);
 
-                //var linkCache = inputMod.ToUntypedImmutableLinkCache();
-                //foreach (var context in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
+
+                var linkCache = inputMod.ToUntypedImmutableLinkCache();
+
                 foreach (var context in curCluster.records)
                 {
                     if (context.Record.FormKey.ModKey == inputMod.ModKey)
                     {
-                        context.DuplicateIntoAsNewRecord(newMod);
+                        // TODO: this must ensure the same FormID, somehow
+                        // for now, just pass the EditorID as second parameter. This is sub-optimal, but I can't think of any other way RN
+                        var resolvedRecord = context.Record.ToLinkGetter().TryResolve(linkCache);
+                        var edid = resolvedRecord?.EditorID;
+                        var newContext = context.DuplicateIntoAsNewRecord(newMod, edid);
                     }
                     else
                     {
