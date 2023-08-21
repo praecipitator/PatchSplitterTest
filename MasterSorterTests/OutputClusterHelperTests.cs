@@ -248,10 +248,6 @@ namespace MasterSorter.Tests
                 var formLinks = majorRecord.EnumerateFormLinks();
                 foreach (var formLink in formLinks)
                 {
-                    // is formLink a major record itself? but, do we even care?
-                    // I think we don't have to follow it recursively
-                    //formLink.
-                    // result.UnionWith(GetAllMasters(formLink));
                     result.Add(formLink.FormKey.ModKey);
                 }
             }

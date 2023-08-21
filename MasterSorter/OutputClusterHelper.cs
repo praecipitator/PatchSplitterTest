@@ -10,6 +10,9 @@ namespace MasterSorter
         where TMod : TModGetter, IMod, IMajorRecordContextEnumerable<TMod, TModGetter>
         where TModGetter : IModGetter
     {
+        /// <summary>
+        /// Helper class to contain data for a cluster, which will eventually become a file
+        /// </summary>
         public class Cluster
         {
             /// <summary>
@@ -25,11 +28,16 @@ namespace MasterSorter
             public List<IModContext<TMod, TModGetter, IMajorRecord, IMajorRecordGetter>> records = new();
         }
 
+        /// <summary>
+        /// Returns a HashSet of all masters relevant for `recordContext`, except the given exception
+        /// </summary>
+        /// <param name="recordContext"></param>
+        /// <param name="except">To exclude the current inputMod</param>
+        /// <returns></returns>
         private static HashSet<ModKey> GetAllMasters(IModContext<TMod, TModGetter, IMajorRecord, IMajorRecordGetter> recordContext, ModKey except)
         {
             var result = new HashSet<ModKey>();
 
-            // what if majorRecord is an override?
             if (except != recordContext.Record.FormKey.ModKey)
             {
                 result.Add(recordContext.Record.FormKey.ModKey);
@@ -38,25 +46,25 @@ namespace MasterSorter
             var formLinks = recordContext.Record.EnumerateFormLinks();
             foreach (var formLink in formLinks)
             {
-                // is formLink a major record itself? but, do we even care?
-                // I think we don't have to follow it recursively
-                //formLink.
-                // result.UnionWith(GetAllMasters(formLink));
+                // formLink only pulls the master it originates from, not from any forms it might reference. 
                 result.Add(formLink.FormKey.ModKey);
             }
 
             return result;
         }
 
-        public static List<Cluster> GenerateClusters(TMod inputMod, int limit)
+        /// <summary>
+        /// Splits a given `inputMod` into n output Clusters, each containing at most `limit` masters.
+        /// </summary>
+        /// <param name="inputMod"></param>
+        /// <param name="limit"></param>
+        /// <returns></returns>
+        private static List<Cluster> GenerateClusters(TMod inputMod, int limit)
         {
             var clusters = new List<Cluster>();
 
             var linkCache = inputMod.ToUntypedImmutableLinkCache();
             foreach (var rec in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
-
-            // var recs = inputMod.EnumerateMajorRecords();
-            // foreach (var rec in recs)
             {
                 var masters = GetAllMasters(rec, inputMod.ModKey);
                 var lastClusterIndex = -1;
@@ -84,6 +92,7 @@ namespace MasterSorter
                     };
                     newCluster.records.Add(rec);
 
+                    // TODO: at this point, we could add an index to `existingCluster`, using `newCluster` as key
                     clusters.Add(newCluster);
                     continue;
                 }
@@ -91,16 +100,23 @@ namespace MasterSorter
                 // found existing, union it with current masters
                 var existingCluster = clusters[lastClusterIndex];
                 existingCluster.masters.UnionWith(masters);
+                // TODO: at this point, we could add an index to `existingCluster`, using `masters` as key
                 existingCluster.records.Add(rec);
             }
 
             return clusters;
         }
 
+        /// <summary>
+        /// Splits a given `inputMod` into n output TMods, each containing at most `limit` masters.
+        /// This is intended to be the main "entry point" for the splitting system.
+        /// </summary>
+        /// <param name="release">The relevant GameRelease (needed to create output TMods)</param>
+        /// <param name="inputMod">Raw TMod, with potentially too many masters</param>
+        /// <param name="limit">Maximal number of masters in each output. The only reason why this is even configurable is testing.</param>
+        /// <returns></returns>
         public static List<TMod> SplitOutputMod(GameRelease release, TMod inputMod, int limit = 255)
         {
-            // edge case: if rec is supposed to recieve a certain FormID via the EditorID mechanism, it should also always go into the same filename
-            // TODO think of a mechanism for this
             var result = new List<TMod>();
             var inputFileName = inputMod.ModKey.FileName;
             var baseName = inputFileName.NameWithoutExtension;
@@ -110,28 +126,30 @@ namespace MasterSorter
             for (int i = 0; i < clusters.Count; i++)
             {
                 var curCluster = clusters[i];
-                string? curFileName;
+                string curFileName;
                 if (i == 0)
                 {
+                    // call the first output the same as the input, so Synthesis.esp stays Synthesis.esp
                     curFileName = inputFileName;
                 }
                 else
                 {
+                    // otherwise, suffix them with a number, making Synthesis_1.esp, Synthesis_2.esp, etc
                     curFileName = baseName + "_" + (i + 1).ToString() + ext;
                 }
 
                 var newMod = ModInstantiator<TMod>.Activator(ModKey.FromFileName(curFileName), release);
 
-                //var linkCache = inputMod.ToUntypedImmutableLinkCache();
-                //foreach (var context in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
                 foreach (var context in curCluster.records)
                 {
                     if (context.Record.FormKey.ModKey == inputMod.ModKey)
                     {
+                        // this is a Form which has been created within inputMod -> copy it right over
                         context.DuplicateIntoAsNewRecord(newMod);
                     }
                     else
                     {
+                        // this is an override -> copy as override
                         context.GetOrAddAsOverride(newMod);
                     }
                 }
