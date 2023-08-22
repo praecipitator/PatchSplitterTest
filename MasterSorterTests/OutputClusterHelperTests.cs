@@ -35,6 +35,65 @@ namespace MasterSorter.Tests
         }
 
         [TestMethod()]
+        public void ClusterCachingTest()
+        {
+            // This doesn't actually test whenever anything is cached, but it creates a situation where it should, so it's debuggable.
+            // To actually test this, we wouild need to inject a cache object, or so
+            var inputMod = new Fallout4Mod(ModKey.FromNameAndExtension("inputMod.esp"));
+            // create several forms with the same masterlists, and make sure this doesn't break anything
+            List<Fallout4Mod> testMods = new();
+            for(var i=0; i<10; i++)
+            {
+                var curMod = new Fallout4Mod(ModKey.FromNameAndExtension("dummy_"+i+".esp"));
+                testMods.Add(curMod);
+            }
+
+            List<FormList> subset01 = new();
+            for(var i=0; i<5; i++)
+            {
+                // the formlist should contain the first 10 files and go into the first cluster
+                var firstMod = testMods[0];
+                var curFst = new FormList(firstMod.GetNextFormKey());
+                subset01.Add(curFst);
+
+                for(var j=0; j<10; j++)
+                {
+                    var curMod = testMods[j];
+                    var curMisc = new MiscItem(curMod);
+
+                    curFst.Items.Add(curMisc);
+                }
+                inputMod.FormLists.Add(curFst);
+            }
+
+            // make more formlists, with a smaller subset
+            List<FormList> subset02 = new();
+            for (var i = 0; i < 5; i++)
+            {
+                // the formlist should contain the first 10 files and go into the first cluster
+                var firstMod = testMods[0];
+                var curFst = new FormList(firstMod.GetNextFormKey());
+                subset02.Add(curFst);
+
+                for (var j = 2; j < 8; j++)
+                {
+                    var curMod = testMods[j];
+                    var curMisc = new MiscItem(curMod);
+
+                    curFst.Items.Add(curMisc);
+                }
+                inputMod.FormLists.Add(curFst);
+            }
+
+            var outputList = OutputClusterHelper<IFallout4Mod, IFallout4ModGetter>.SplitOutputMod(GameRelease.Fallout4, inputMod, 10);
+
+            Assert.AreEqual(1, outputList.Count, "Should have only generated one cluster");
+
+        }
+
+
+
+        [TestMethod()]
         public void GenerateClustersTest()
         {
             // try to make a fake mod

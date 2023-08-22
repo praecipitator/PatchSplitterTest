@@ -13,18 +13,16 @@ namespace MasterSorter
         /// <summary>
         /// Helper class to contain data for a cluster, which will eventually become a file
         /// </summary>
-        public class Cluster
+        internal class Cluster
         {
             /// <summary>
             /// The masters for the current cluster. The output file must have these masters.
             /// </summary>
-            public HashSet<ModKey> masters = new();
+            public ComparableModKeySet masters = new();
 
             /// <summary>
-            /// The record for the current cluster, these would be contained in the resulting file
+            /// The records for the current cluster, these would be contained in the resulting file
             /// </summary>
-            // public List<IMajorRecord> records = new();
-
             public List<IModContext<TMod, TModGetter, IMajorRecord, IMajorRecordGetter>> records = new();
         }
 
@@ -34,9 +32,9 @@ namespace MasterSorter
         /// <param name="recordContext"></param>
         /// <param name="except">To exclude the current inputMod</param>
         /// <returns></returns>
-        private static HashSet<ModKey> GetAllMasters(IModContext<TMod, TModGetter, IMajorRecord, IMajorRecordGetter> recordContext, ModKey except)
+        private static ComparableModKeySet GetAllMasters(IModContext<TMod, TModGetter, IMajorRecord, IMajorRecordGetter> recordContext, ModKey except)
         {
-            var result = new HashSet<ModKey>();
+            var result = new ComparableModKeySet();
 
             if (except != recordContext.Record.FormKey.ModKey)
             {
@@ -63,22 +61,36 @@ namespace MasterSorter
         {
             var clusters = new List<Cluster>();
 
+            var clusterLookupCache = new Dictionary<ComparableModKeySet, Cluster>();
+
             var linkCache = inputMod.ToUntypedImmutableLinkCache();
             foreach (var rec in inputMod.EnumerateMajorRecordContexts<IMajorRecord, IMajorRecordGetter>(linkCache))
             {
                 var masters = GetAllMasters(rec, inputMod.ModKey);
+
+                if (clusterLookupCache.ContainsKey(masters))
+                {
+                    var cacheCluster = clusterLookupCache[masters];
+                    // found a cluster in the cache
+                    // and in this case, the current masterlist should be a subset of cacheCluster already
+                    cacheCluster.records.Add(rec);
+                    continue;
+                }
+
                 var lastClusterIndex = -1;
+                IEnumerable<ModKey>? lastMissingMasters = null;
 
                 for (int i = 0; i < clusters.Count; i++)
                 {
                     var curCluster = clusters[i];
 
-                    var missingMasters = masters.Except(curCluster.masters);
+                    IEnumerable<ModKey> missingMasters = masters.Except(curCluster.masters);
 
                     if (curCluster.masters.Count + missingMasters.Count() <= limit)
                     {
                         // found an existing cluster where the current record fits
                         lastClusterIndex = i;
+                        lastMissingMasters = missingMasters;
                         break;
                     }
                 }
@@ -92,16 +104,19 @@ namespace MasterSorter
                     };
                     newCluster.records.Add(rec);
 
-                    // TODO: at this point, we could add an index to `existingCluster`, using `newCluster` as key
                     clusters.Add(newCluster);
+                    clusterLookupCache.Add(masters, newCluster);
                     continue;
                 }
 
                 // found existing, union it with current masters
                 var existingCluster = clusters[lastClusterIndex];
-                existingCluster.masters.UnionWith(masters);
-                // TODO: at this point, we could add an index to `existingCluster`, using `masters` as key
+                // In theory, `lastMissingMasters` should never be null here, and using `masters` should always work,
+                // but using `lastMissingMasters` might be just a tiny bit more efficient, and the IDE thinks it can be null here.
+                existingCluster.masters.UnionWith(lastMissingMasters ?? masters);
+
                 existingCluster.records.Add(rec);
+                clusterLookupCache.Add(masters, existingCluster);
             }
 
             return clusters;
